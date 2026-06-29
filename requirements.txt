@@ -1,0 +1,14 @@
+numpy
+pandas
+scipy
+astropy
+lightkurve
+matplotlib
+scikit-learn
+torch
+torchvision
+fastapi
+uvicorn
+pydantic
+pytest
+python-dotenv
