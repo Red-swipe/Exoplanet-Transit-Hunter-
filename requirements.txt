@@ -4,6 +4,7 @@ scipy
 astropy
 lightkurve
 matplotlib
+joblib
 scikit-learn
 torch
 torchvision

@@ -1,6 +1,7 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
+import { getHealth, getMetrics, predict } from "./api";
 
 const navItems = [
   { id: "mission", label: "MISSION CONTROL", icon: "grid" },
@@ -115,9 +116,19 @@ function SectionTitle({ children, meta }) {
 }
 
 function MissionControl() {
+  const [health, setHealth] = useState(null);
+  const [metrics, setMetrics] = useState(null);
+
+  useEffect(() => {
+    getHealth().then(setHealth).catch(() => {});
+    getMetrics().then(setMetrics).catch(() => {});
+  }, []);
+
+  const detections = metrics ? metrics.total_predictions.toLocaleString() : "—";
+
   const metricCards = [
     ["STARS SCANNED", "1,248,392", "grid"],
-    ["DETECTIONS", "4,812", "spark"],
+    ["DETECTIONS", detections, "spark"],
     ["AI CONFIDENCE", "98.4%", "brain"],
     ["FALSE POSITIVES", "124", "warning"],
   ];
@@ -233,11 +244,19 @@ function RecentActivity() {
 }
 
 function SystemHealth() {
+  const [health, setHealth] = useState(null);
+
+  useEffect(() => {
+    getHealth().then(setHealth).catch(() => {});
+  }, []);
+
   return (
     <Panel className="health-panel">
       <div className="panel-heading">
         <span>SYSTEM HEALTH</span>
-        <span className="good">● OPTIMAL</span>
+        <span className={health?.model_loaded ? "good" : "warn"}>
+          {health?.model_loaded ? "● OPTIMAL" : health ? "● NO MODEL" : "● CONNECTING"}
+        </span>
       </div>
       <Progress label="CPU LOAD" value="42%" amount={42} />
       <Progress label="MEM USAGE" value="8.4 / 32 GB" amount={26} />
@@ -368,6 +387,28 @@ function LightCurveViewer() {
 }
 
 function AiPredictor() {
+  const [file, setFile] = useState(null);
+  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const fileRef = useRef(null);
+
+  const handleFile = async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    setFile(f);
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await predict(f);
+      setResult(res);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <>
       <ScreenHeader
@@ -377,11 +418,19 @@ function AiPredictor() {
       />
       <div className="ai-layout">
         <Panel className="probability-panel">
-          <div className="big-prob">98.4<span>%</span></div>
+          <div className="big-prob">{result ? (result.confidence * 100).toFixed(1) : "98.4"}<span>%</span></div>
           <p>DETECTION PROB.</p>
-          <small>PRED_CONF_INDEX.v4</small>
-          <DataPoint label="SIGMA-5.2" value="SIGNIFICANCE" />
-          <DataPoint label="0.00012" value="FALSE POS. PROB" />
+          <small>{result ? `MODEL: ${result.model_name}` : "PRED_CONF_INDEX.v4"}</small>
+          <DataPoint label={result ? (result.predicted_class === 1 ? "TRANSIT" : "NON-TRANSIT") : "SIGMA-5.2"} value={result ? (result.predicted_class === 1 ? "CANDIDATE" : "NOISE") : "SIGNIFICANCE"} />
+          <DataPoint label={result ? `SAMPLES: ${result.n_samples}` : "0.00012"} value={result ? `FEATURES: ${result.n_features}` : "FALSE POS. PROB"} />
+          <div className="upload-row">
+            <input type="file" ref={fileRef} onChange={handleFile} accept=".fits,.fit" hidden />
+            <button className="outline-button" type="button" onClick={() => fileRef.current?.click()} disabled={loading}>
+              {loading ? "ANALYZING..." : "UPLOAD FITS"}
+            </button>
+            {error && <span className="upload-err">{error}</span>}
+            {file && !error && <span className="upload-info">{file.name}</span>}
+          </div>
         </Panel>
         <Panel className="phase-panel">
           <div className="panel-heading">
@@ -399,15 +448,33 @@ function AiPredictor() {
       <div className="ai-bottom">
         <Panel>
           <h3>MODEL RATIONALE (XAI)</h3>
-          <Rationale title="Transit Shape Symmetry" impact="0.42" />
-          <Rationale title="Duration Consistency" impact="0.28" />
-          <Rationale title="Limb Darkening" impact="0.19" />
+          {result ? (
+            Object.entries(result.probabilities).map(([k, v]) => (
+              <Rationale key={k} title={k.replace(/_/g, " ").toUpperCase()} impact={v.toFixed(4)} />
+            ))
+          ) : (
+            <>
+              <Rationale title="Transit Shape Symmetry" impact="0.42" />
+              <Rationale title="Duration Consistency" impact="0.28" />
+              <Rationale title="Limb Darkening" impact="0.19" />
+            </>
+          )}
         </Panel>
         <Panel>
           <h3>BENCHMARK COMPARISON</h3>
-          <Progress label="KEPLER-186F" value="82% Correlation" amount={82} />
-          <Progress label="CURRENT TARGET" value="98.4% Prob." amount={98} />
-          <Progress label="EARTH-SIM" value="64% Correlation" amount={64} accent="purple" />
+          {result ? (
+            <>
+              <Progress label="PREDICTED CLASS" value={result.predicted_class === 1 ? "TRANSIT" : "NON-TRANSIT"} amount={result.confidence * 100} />
+              <Progress label="CONFIDENCE" value={`${(result.confidence * 100).toFixed(1)}%`} amount={result.confidence * 100} />
+              <Progress label="PROC. TIME" value={`${result.processing_time_seconds.toFixed(3)}s`} amount={Math.min(result.processing_time_seconds * 20, 100)} accent="purple" />
+            </>
+          ) : (
+            <>
+              <Progress label="KEPLER-186F" value="82% Correlation" amount={82} />
+              <Progress label="CURRENT TARGET" value="98.4% Prob." amount={98} />
+              <Progress label="EARTH-SIM" value="64% Correlation" amount={64} accent="purple" />
+            </>
+          )}
         </Panel>
         <Panel className="confirm-panel">
           <h2>Validated Candidate Identified</h2>
@@ -420,11 +487,22 @@ function AiPredictor() {
 }
 
 function ModelMetrics() {
+  const [metrics, setMetrics] = useState(null);
+
+  useEffect(() => {
+    getMetrics().then(setMetrics).catch(() => {});
+  }, []);
+
+  const eyebrow = metrics ? `MODEL: ${metrics.model_name} | TYPE: ${metrics.model_type}` : "PERFORMANCE_METRICS_V4";
+  const title = metrics
+    ? `PREDICTIONS: ${metrics.total_predictions} | UPTIME: ${Math.floor(metrics.uptime_seconds / 60)}m ${Math.floor(metrics.uptime_seconds % 60)}s`
+    : "NEURAL NETWORK VALIDATION PIPELINE | STATUS: OPTIMIZING";
+
   return (
     <>
       <ScreenHeader
-        eyebrow="PERFORMANCE_METRICS_V4"
-        title="NEURAL NETWORK VALIDATION PIPELINE | STATUS: OPTIMIZING"
+        eyebrow={eyebrow}
+        title={title}
       />
       <div className="metrics-layout">
         <Panel className="score-panel"><DataPoint label="CURRENT PRECISION" value="0.9842" /></Panel>

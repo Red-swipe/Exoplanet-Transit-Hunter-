@@ -920,6 +920,27 @@ p {
   color: var(--text);
 }
 
+.upload-row {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.upload-row .outline-button {
+  width: 100%;
+}
+.upload-info {
+  font-size: 11px;
+  opacity: 0.7;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.upload-err {
+  font-size: 11px;
+  color: #f55;
+}
+
 .ai-layout {
   grid-template-columns: 300px 1fr;
 }
