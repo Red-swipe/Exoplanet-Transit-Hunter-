@@ -7,11 +7,12 @@ saved as FITS files in the project's raw data directory.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from config import settings
-from src.logging_utils import get_logger
+from src.logging_utils import get_logger, timer
 
 
 if TYPE_CHECKING:
@@ -19,6 +20,9 @@ if TYPE_CHECKING:
 
 
 logger = get_logger(__name__)
+
+
+_NETWORK_EXCEPTIONS = (ConnectionError, TimeoutError, OSError)
 
 
 def _import_lightkurve() -> Any:
@@ -41,6 +45,23 @@ def _import_lightkurve() -> Any:
         ) from exc
 
     return lk
+
+
+def normalize_target_id(target_id: str) -> str:
+    """Normalize a target identifier for consistent filename / cache usage.
+
+    Converts spaces to underscores and strips surrounding whitespace so
+    that the same logical target is always mapped to the same filesystem
+    key regardless of input formatting.
+
+    Args:
+        target_id: Raw target identifier (e.g. ``"KIC 11904151"``).
+
+    Returns:
+        Normalized identifier safe for use in filenames.
+    """
+
+    return target_id.strip().replace(" ", "_")
 
 
 def _ensure_download_dir(download_dir: Path | None = None) -> Path:
@@ -73,7 +94,7 @@ def _fits_filename(target_id: str, mission: str, author: str = "") -> str:
         Filename with ``.fits`` extension.
     """
 
-    safe_id = target_id.replace(" ", "_")
+    safe_id = normalize_target_id(target_id)
     parts = [safe_id, mission]
     if author:
         parts.append(author)
@@ -92,7 +113,8 @@ def _is_downloaded(target_id: str, mission: str, download_dir: Path) -> bool:
         ``True`` if at least one matching FITS file exists.
     """
 
-    search_pattern = f"{target_id.replace(' ', '_')}_{mission}*.fits"
+    safe_id = normalize_target_id(target_id)
+    search_pattern = f"{safe_id}_{mission}*.fits"
     return len(list(download_dir.glob(search_pattern))) > 0
 
 
@@ -126,7 +148,7 @@ def search_target(
     logger.debug("Calling lk.search_lightcurve(target_id=%s, mission=%s) ...", target_id, mission)
     try:
         search_result = lk.search_lightcurve(target_id, mission=mission)
-    except Exception as exc:
+    except _NETWORK_EXCEPTIONS as exc:
         logger.exception(
             "Search failed for target %s in mission %s.", target_id, mission
         )
@@ -198,11 +220,10 @@ def download_lightcurve(
 
     lk = _import_lightkurve()
     output_dir = _ensure_download_dir(download_dir)
+    safe_id = normalize_target_id(target_id)
 
     if _is_downloaded(target_id, mission, output_dir):
-        existing = sorted(
-            output_dir.glob(f"{target_id.replace(' ', '_')}_{mission}*.fits")
-        )
+        existing = sorted(output_dir.glob(f"{safe_id}_{mission}*.fits"))
         logger.info(
             "Light curve already downloaded: %s. Returning existing file.",
             existing[0],
@@ -212,46 +233,97 @@ def download_lightcurve(
     logger.info("Downloading light curve for %s (%s).", target_id, mission)
 
     from astroquery.mast import Mast
-    Mast.TIMEOUT = 120
-    logger.info(
-        "Calling lk.search_lightcurve(target_id=%s, mission=%s) ...",
-        target_id,
-        mission,
-    )
-    try:
-        search_result = lk.search_lightcurve(target_id, mission=mission)
-    except Exception as exc:
-        logger.exception("Search failed for target %s.", target_id)
-        raise RuntimeError(f"Failed to search for target {target_id}.") from exc
-    logger.info(
-        "lk.search_lightcurve returned %d result(s).",
-        0 if search_result is None else len(search_result),
-    )
+    Mast.TIMEOUT = settings.mast_timeout
 
-    if search_result is None or len(search_result) == 0:
-        logger.error(
-            "No light curves found for target %s in %s.", target_id, mission
-        )
-        raise ValueError(
-            f"No light curves found for target '{target_id}' in {mission} data."
-        )
+    max_retries = settings.download_max_retries
+    retry_delay = settings.download_retry_delay
 
-    logger.info(
-        "Calling search_result[0].download(quality_bitmask=%s) ...",
-        quality_bitmask,
-    )
-    try:
-        lightcurve = search_result[0].download(quality_bitmask=quality_bitmask)
-    except Exception as exc:
-        logger.exception("Download failed for target %s.", target_id)
-        raise RuntimeError(
-            f"Failed to download light curve for {target_id}."
-        ) from exc
-    logger.info("search_result[0].download returned successfully.")
+    lightcurve = None
+    search_result = None
 
-    if lightcurve is None:
-        logger.error("Download returned None for target %s.", target_id)
-        raise RuntimeError(f"Download returned empty result for target {target_id}.")
+    for attempt in range(1, max_retries + 1):
+        with timer(logger, "download_attempt", target_id=target_id, attempt=attempt):
+            try:
+                logger.info(
+                    "Calling lk.search_lightcurve(target_id=%s, mission=%s) ...",
+                    target_id,
+                    mission,
+                )
+                search_result = lk.search_lightcurve(target_id, mission=mission)
+                logger.info(
+                    "lk.search_lightcurve returned %d result(s).",
+                    0 if search_result is None else len(search_result),
+                )
+            except _NETWORK_EXCEPTIONS as exc:
+                if attempt < max_retries:
+                    logger.warning(
+                        "Search attempt %d/%d failed for %s: %s. "
+                        "Retrying in %.1fs ...",
+                        attempt,
+                        max_retries,
+                        target_id,
+                        exc,
+                        retry_delay * (2 ** (attempt - 1)),
+                    )
+                    time.sleep(retry_delay * (2 ** (attempt - 1)))
+                    continue
+                logger.exception("Search failed for target %s.", target_id)
+                raise RuntimeError(
+                    f"Failed to search for target {target_id} after "
+                    f"{max_retries} attempts."
+                ) from exc
+
+            if search_result is None or len(search_result) == 0:
+                raise ValueError(
+                    f"No light curves found for target '{target_id}' "
+                    f"in {mission} data."
+                )
+
+            try:
+                logger.info(
+                    "Calling search_result[0].download(quality_bitmask=%s) ...",
+                    quality_bitmask,
+                )
+                lc = search_result[0].download(quality_bitmask=quality_bitmask)
+                logger.info("search_result[0].download returned successfully.")
+            except _NETWORK_EXCEPTIONS as exc:
+                if attempt < max_retries:
+                    logger.warning(
+                        "Download attempt %d/%d failed for %s: %s. "
+                        "Retrying in %.1fs ...",
+                        attempt,
+                        max_retries,
+                        target_id,
+                        exc,
+                        retry_delay * (2 ** (attempt - 1)),
+                    )
+                    time.sleep(retry_delay * (2 ** (attempt - 1)))
+                    continue
+                logger.exception("Download failed for target %s.", target_id)
+                raise RuntimeError(
+                    f"Failed to download light curve for {target_id} after "
+                    f"{max_retries} attempts."
+                ) from exc
+
+            if lc is None:
+                if attempt < max_retries:
+                    logger.warning(
+                        "Download attempt %d/%d returned None for %s. Retrying ...",
+                        attempt,
+                        max_retries,
+                        target_id,
+                    )
+                    time.sleep(retry_delay * (2 ** (attempt - 1)))
+                    continue
+                raise RuntimeError(
+                    f"Download returned empty result for target {target_id} "
+                    f"after {max_retries} attempts."
+                )
+
+            lightcurve = lc
+            break
+
+    assert lightcurve is not None
 
     try:
         author = str(getattr(search_result[0], "author", ""))
@@ -261,16 +333,17 @@ def download_lightcurve(
     filename = _fits_filename(target_id, mission, author)
     output_path = output_dir / filename
 
-    try:
-        lightcurve.to_fits(output_path, overwrite=True)
-    except Exception as exc:
-        logger.exception("Failed to write FITS file: %s", output_path)
-        raise RuntimeError(
-            f"Failed to write FITS file to {output_path}."
-        ) from exc
+    with timer(logger, "save_fits", target_id=target_id):
+        try:
+            lightcurve.to_fits(output_path, overwrite=True)
+        except (OSError, TypeError) as exc:
+            logger.exception("Failed to write FITS file: %s", output_path)
+            raise RuntimeError(
+                f"Failed to write FITS file to {output_path}."
+            ) from exc
 
     try:
-        lk.read(output_path)
+        reloaded = lk.read(output_path)
     except Exception as exc:
         logger.exception("Downloaded file is corrupted: %s", output_path)
         output_path.unlink(missing_ok=True)
@@ -280,7 +353,7 @@ def download_lightcurve(
         "Successfully downloaded light curve for %s to %s (%d samples).",
         target_id,
         output_path,
-        len(lightcurve),
+        len(reloaded),
     )
     return output_path
 

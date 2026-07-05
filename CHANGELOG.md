@@ -5,6 +5,42 @@ All notable changes to the Exoplanet Transit Hunter project are documented in th
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] — 2026-07-05
+
+### Added
+
+- **Regression tests** for all three scientific correctness fixes in
+  `tests/test_features.py`:
+  - `B1` — `TestExtractTimeseriesFeatures.test_lomb_scargle_detects_known_period`:
+    sine wave with period 5.0 days, asserts `ts_ls_peak_period ≈ 5.0`
+  - `B2` — `TestExtractFeatures.test_handles_nan_in_time_and_flux`: 500 points
+    with NaN every 10th/15th sample, asserts all features finite
+  - `B2` — `TestExtractFeatures.test_all_nan_still_raises`: all-NaN input
+    asserts `ValueError`
+  - `B3` — `TestExtractDistributionFeatures.test_tail_mass_is_fraction_in_unit_interval`:
+    random data, asserts `0.0 ≤ dist_tail_mass ≤ 1.0`
+  - `B3` — `TestExtractDistributionFeatures.test_uniform_tail_mass_is_reasonable`:
+    uniform [-1,1], 20 bins, asserts `≈0.20`
+- **`ROADMAP.md`** — completed fixes, known issues, and future work sections
+
+### Fixed
+
+- **B1 — Lomb-Scargle angular frequency**: `angular_freqs` now uses
+  `linspace(...) * 2π` (radians/day); `peak_period = 2π / peak_freq`. Old code
+  produced periods off by a factor of 2π.
+- **B2 — NaN propagation in feature extraction**: `_validate_arrays` now returns
+  filtered arrays (`time_arr[valid], flux_arr[valid]`). Old code returned
+  unfiltered arrays, letting NaN poison downstream computations.
+- **B3 — Histogram probability mass normalization**: `density=True` replaced
+  with `density=False`; `tail_mass` normalized by explicit total count sum. Old
+  code produced `tail_mass > 1`.
+
+### Changed
+
+- `src/features.py`: three scientific correctness fixes described above
+- `tests/test_features.py`: 5 new regression test methods added across 3
+  existing test classes
+
 ## [1.0.0] — 2026-07-01
 
 ### Added

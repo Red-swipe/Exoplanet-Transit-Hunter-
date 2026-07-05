@@ -8,6 +8,7 @@ clips statistical outliers, and optionally smooths the final signal.
 
 from __future__ import annotations
 
+import io
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -16,7 +17,7 @@ import numpy as np
 import numpy.typing as npt
 from scipy.signal import medfilt, savgol_filter
 
-from src.logging_utils import get_logger
+from src.logging_utils import get_logger, timer
 
 
 if TYPE_CHECKING:
@@ -226,6 +227,36 @@ def load_lightcurve(path: str | Path) -> "LightCurve":
     return lightcurve
 
 
+def load_lightcurve_from_bytes(data: bytes) -> "LightCurve":
+    """Load a Kepler or TESS FITS light curve from an in-memory byte buffer.
+
+    Args:
+        data: Raw FITS file content as bytes.
+
+    Returns:
+        Loaded Lightkurve ``LightCurve`` object.
+
+    Raises:
+        ValueError: If the bytes cannot be parsed as a light curve.
+        ImportError: If Lightkurve is not installed.
+    """
+
+    lk = _import_lightkurve()
+    try:
+        buffer = io.BytesIO(data)
+        read_lightcurve = getattr(lk, "read", None)
+        if read_lightcurve is not None:
+            lightcurve = read_lightcurve(buffer)
+        else:
+            lightcurve = lk.LightCurve.read(buffer)
+    except Exception as exc:
+        logger.exception("Failed to load light curve from bytes.")
+        raise ValueError("Failed to load light curve from in-memory buffer.") from exc
+
+    logger.info("Loaded light curve from bytes with %d samples.", len(lightcurve))
+    return lightcurve
+
+
 def remove_nan(lightcurve: "LightCurve") -> "LightCurve":
     """Remove samples with non-finite time, flux, or flux error values.
 
@@ -401,6 +432,49 @@ def median_filter(lightcurve: "LightCurve", kernel_size: int = 5) -> "LightCurve
     return _build_lightcurve(arrays.time, filtered_flux, arrays.flux_error)
 
 
+def preprocess_lightcurve(
+    lightcurve: "LightCurve",
+    *,
+    savgol_window_length: int = 101,
+    savgol_polyorder: int = 2,
+    sigma: float = 5.0,
+    apply_median_filter: bool = False,
+    median_kernel_size: int = 5,
+) -> "LightCurve":
+    """Run the full preprocessing pipeline on an already-loaded light curve.
+
+    Applies, in order: NaN removal, median normalisation, Savitzky-Golay
+    detrending, sigma clipping, and optional median filtering.
+
+    Args:
+        lightcurve: Input Lightkurve ``LightCurve`` object.
+        savgol_window_length: Savitzky-Golay detrending window length.
+        savgol_polyorder: Savitzky-Golay polynomial order.
+        sigma: Sigma clipping threshold.
+        apply_median_filter: Whether to smooth the final flux values.
+        median_kernel_size: Median filter kernel size when enabled.
+
+    Returns:
+        Clean preprocessed Lightkurve ``LightCurve`` object.
+
+    Raises:
+        ValueError: If preprocessing fails due to invalid data or parameters.
+    """
+
+    logger.info("Starting in-memory preprocessing pipeline.")
+    with timer(logger, "preprocess_lightcurve"):
+        lc = remove_nan(lightcurve)
+        lc = normalize(lc)
+        lc = detrend(lc, window_length=savgol_window_length, polyorder=savgol_polyorder)
+        lc = sigma_clip(lc, sigma=sigma)
+
+        if apply_median_filter:
+            lc = median_filter(lc, kernel_size=median_kernel_size)
+
+    logger.info("Completed in-memory preprocessing with %d samples.", len(lc))
+    return lc
+
+
 def preprocess_pipeline(
     path: str | Path,
     *,
@@ -410,7 +484,10 @@ def preprocess_pipeline(
     apply_median_filter: bool = False,
     median_kernel_size: int = 5,
 ) -> "LightCurve":
-    """Run the full light curve preprocessing pipeline.
+    """Run the full light curve preprocessing pipeline from a file path.
+
+    Loads the FITS file and delegates to :func:`preprocess_lightcurve` for
+    all subsequent cleaning steps.
 
     Args:
         path: Path to a Kepler or TESS FITS light curve file.
@@ -430,18 +507,16 @@ def preprocess_pipeline(
     """
 
     logger.info("Starting preprocessing pipeline for %s.", path)
-    lightcurve = load_lightcurve(path)
-    lightcurve = remove_nan(lightcurve)
-    lightcurve = normalize(lightcurve)
-    lightcurve = detrend(
-        lightcurve,
-        window_length=savgol_window_length,
-        polyorder=savgol_polyorder,
-    )
-    lightcurve = sigma_clip(lightcurve, sigma=sigma)
-
-    if apply_median_filter:
-        lightcurve = median_filter(lightcurve, kernel_size=median_kernel_size)
+    with timer(logger, "preprocess_pipeline"):
+        lightcurve = load_lightcurve(path)
+        lightcurve = preprocess_lightcurve(
+            lightcurve,
+            savgol_window_length=savgol_window_length,
+            savgol_polyorder=savgol_polyorder,
+            sigma=sigma,
+            apply_median_filter=apply_median_filter,
+            median_kernel_size=median_kernel_size,
+        )
 
     logger.info("Completed preprocessing pipeline with %d samples.", len(lightcurve))
     return lightcurve

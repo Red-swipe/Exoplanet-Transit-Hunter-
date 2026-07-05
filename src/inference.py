@@ -75,7 +75,7 @@ def load_trained_model(name: str = "random_forest") -> ClassifierMixin:
     except FileNotFoundError:
         logger.exception("Model not found: %s", model_path)
         raise
-    except Exception:
+    except (ValueError, ImportError, OSError):
         logger.exception("Failed to load model: %s", model_path)
         raise
 
@@ -228,7 +228,7 @@ def predict_batch(
                 **preprocess_kwargs,
             )
             successes.append(result)
-        except Exception as e:
+        except (FileNotFoundError, OSError, ValueError, KeyError, RuntimeError) as e:
             logger.exception("Failed: %s", file_path)
             failures.append({"file": str(file_path), "error": f"{type(e).__name__}: {e}"})
 

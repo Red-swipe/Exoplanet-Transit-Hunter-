@@ -32,7 +32,7 @@ from sklearn.metrics import (
 from sklearn.model_selection import StratifiedKFold, train_test_split
 
 from config import settings
-from src.logging_utils import get_logger
+from src.logging_utils import get_logger, timer
 
 
 logger = get_logger(__name__)
@@ -217,7 +217,8 @@ def train_random_forest(
         **kwargs,
     }
     model = RandomForestClassifier(**params)
-    model.fit(X, y)
+    with timer(logger, "train_random_forest"):
+        model.fit(X, y)
     logger.info("Random Forest trained with %d estimators.", params["n_estimators"])
     return model
 
@@ -244,7 +245,8 @@ def train_gradient_boosting(
         **kwargs,
     }
     model = GradientBoostingClassifier(**params)
-    model.fit(X, y)
+    with timer(logger, "train_gradient_boosting"):
+        model.fit(X, y)
     logger.info("Gradient Boosting trained with %d estimators.", params["n_estimators"])
     return model
 
@@ -331,32 +333,33 @@ def evaluate_model(
         ValueError: If fewer than two distinct classes are present in
             ``y_test`` (ROC AUC requires both classes).
     """
-    y_pred = model.predict(X_test)
+    with timer(logger, "evaluate_model"):
+        y_pred = model.predict(X_test)
 
-    try:
-        y_prob = model.predict_proba(X_test)[:, 1]
-    except (AttributeError, IndexError):
-        y_prob = y_pred
+        try:
+            y_prob = model.predict_proba(X_test)[:, 1]
+        except (AttributeError, IndexError):
+            y_prob = y_pred
 
-    unique = np.unique(y_test)
-    roc_auc: float
-    if unique.size < 2:
-        logger.warning("Only one class present in y_test; ROC AUC set to 0.0.")
-        roc_auc = 0.0
-    else:
-        roc_auc = float(roc_auc_score(y_test, y_prob))
+        unique = np.unique(y_test)
+        roc_auc: float
+        if unique.size < 2:
+            logger.warning("Only one class present in y_test; ROC AUC set to 0.0.")
+            roc_auc = 0.0
+        else:
+            roc_auc = float(roc_auc_score(y_test, y_prob))
 
-    cm = confusion_matrix(y_test, y_pred).tolist()
+        cm = confusion_matrix(y_test, y_pred).tolist()
 
-    metrics = Metrics(
-        accuracy=float(accuracy_score(y_test, y_pred)),
-        precision=float(precision_score(y_test, y_pred, average="macro", zero_division=0)),
-        recall=float(recall_score(y_test, y_pred, average="macro", zero_division=0)),
-        f1=float(f1_score(y_test, y_pred, average="macro", zero_division=0)),
-        roc_auc=roc_auc,
-        confusion=cm,
-        report=classification_report(y_test, y_pred, zero_division=0),
-    )
+        metrics = Metrics(
+            accuracy=float(accuracy_score(y_test, y_pred)),
+            precision=float(precision_score(y_test, y_pred, average="macro", zero_division=0)),
+            recall=float(recall_score(y_test, y_pred, average="macro", zero_division=0)),
+            f1=float(f1_score(y_test, y_pred, average="macro", zero_division=0)),
+            roc_auc=roc_auc,
+            confusion=cm,
+            report=classification_report(y_test, y_pred, zero_division=0),
+        )
 
     logger.info(
         "Evaluation — accuracy: %.4f, precision: %.4f, recall: %.4f, "
@@ -436,17 +439,18 @@ def cross_validate_model(
 
     fold_metrics: list[Metrics] = []
 
-    for fold_idx, (train_idx, test_idx) in enumerate(skf.split(X, y)):
-        X_fold_train = X[train_idx]
-        X_fold_test = X[test_idx]
-        y_fold_train = y[train_idx]
-        y_fold_test = y[test_idx]
+    with timer(logger, "cross_validate_model"):
+        for fold_idx, (train_idx, test_idx) in enumerate(skf.split(X, y)):
+            X_fold_train = X[train_idx]
+            X_fold_test = X[test_idx]
+            y_fold_train = y[train_idx]
+            y_fold_test = y[test_idx]
 
-        model = model_class(random_state=seed, **kwargs)
-        model.fit(X_fold_train, y_fold_train)
-        m = evaluate_model(model, X_fold_test, y_fold_test)
-        fold_metrics.append(m)
-        logger.info("Fold %d — accuracy: %.4f, f1: %.4f", fold_idx + 1, m.accuracy, m.f1)
+            model = model_class(random_state=seed, **kwargs)
+            model.fit(X_fold_train, y_fold_train)
+            m = evaluate_model(model, X_fold_test, y_fold_test)
+            fold_metrics.append(m)
+            logger.info("Fold %d — accuracy: %.4f, f1: %.4f", fold_idx + 1, m.accuracy, m.f1)
 
     accs = np.array([m.accuracy for m in fold_metrics])
     precs = np.array([m.precision for m in fold_metrics])

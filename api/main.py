@@ -15,9 +15,9 @@ from .routes import router
 
 logger = get_logger(__name__)
 
-APP_TITLE = "Exoplanet Transit Hunter API"
-APP_VERSION = "0.1.0"
-DEFAULT_MODEL_NAME = "random_forest.joblib"
+APP_TITLE = settings.api_title
+APP_VERSION = settings.api_version
+DEFAULT_MODEL_NAME = settings.model_name
 
 # ---------------------------------------------------------------------------
 # Application lifespan — replaces deprecated on_event("startup")
@@ -41,7 +41,7 @@ async def lifespan(app: FastAPI):
             app.state.model = load_trained_model(DEFAULT_MODEL_NAME)
             app.state.model_name = DEFAULT_MODEL_NAME
             logger.info("Model loaded from %s", model_path)
-        except Exception:
+        except (ValueError, ImportError, OSError):
             logger.warning("Failed to load model from %s", model_path, exc_info=True)
     else:
         logger.warning(

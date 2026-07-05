@@ -21,7 +21,7 @@ import numpy as np
 import numpy.typing as npt
 from scipy import signal, stats
 
-from src.logging_utils import get_logger
+from src.logging_utils import get_logger, timer
 from src.preprocessing import LightCurveBatch
 
 
@@ -416,12 +416,13 @@ def extract_features(
     """
     _validate_arrays(time, flux)
 
-    result: dict[str, float] = {}
-    result.update(extract_statistical_features(flux))
-    result.update(extract_noise_features(flux))
-    result.update(extract_transit_features(time, flux, window_size, n_sigma, min_dip_points))
-    result.update(extract_timeseries_features(time, flux))
-    result.update(extract_distribution_features(flux, n_bins))
+    with timer(logger, "extract_features"):
+        result: dict[str, float] = {}
+        result.update(extract_statistical_features(flux))
+        result.update(extract_noise_features(flux))
+        result.update(extract_transit_features(time, flux, window_size, n_sigma, min_dip_points))
+        result.update(extract_timeseries_features(time, flux))
+        result.update(extract_distribution_features(flux, n_bins))
 
     logger.info("Extracted %d features from light curve.", len(result))
     return result
@@ -445,14 +446,15 @@ def extract_features_from_batch(
     list[dict[str, float]]
         One feature dictionary per light curve in the batch.
     """
-    results: list[dict[str, float]] = []
-    for i in range(len(batch.time)):
-        error = None if batch.flux_error is None else batch.flux_error[i]
-        feats = extract_features(
-            batch.time[i],
-            batch.flux[i],
-            flux_error=error,
-            **kwargs,
-        )
-        results.append(feats)
+    with timer(logger, "extract_features_from_batch"):
+        results: list[dict[str, float]] = []
+        for i in range(len(batch.time)):
+            error = None if batch.flux_error is None else batch.flux_error[i]
+            feats = extract_features(
+                batch.time[i],
+                batch.flux[i],
+                flux_error=error,
+                **kwargs,
+            )
+            results.append(feats)
     return results

@@ -114,7 +114,7 @@ async def predict(request: Request, file: UploadFile = File(...)) -> PredictResp
         )
         elapsed = time.perf_counter() - t0
 
-    except Exception as exc:
+    except (OSError, ValueError, RuntimeError) as exc:
         logger.error("Prediction failed for %s: %s", file.filename, exc)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -222,7 +222,7 @@ async def predict_batch(
                     ),
                 )
             )
-        except Exception as exc:
+        except (OSError, ValueError, RuntimeError) as exc:
             logger.warning("Batch item failed for %s: %s", f.filename, exc)
             results.append(
                 BatchItemResult(

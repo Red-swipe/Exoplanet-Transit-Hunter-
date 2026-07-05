@@ -149,6 +149,13 @@ class TestExtractTimeseriesFeatures:
         feats = extract_timeseries_features(t, flux)
         assert -1.0 <= feats["ts_acf_lag1"] <= 1.0
 
+    def test_lomb_scargle_detects_known_period(self):
+        period = 5.0
+        t = np.linspace(0, 30, 1000)
+        flux = np.sin(2 * np.pi * t / period) + np.random.default_rng(42).normal(0, 0.05, 1000)
+        feats = extract_timeseries_features(t, flux)
+        assert feats["ts_ls_peak_period"] == pytest.approx(period, rel=0.1)
+
 
 # ---------------------------------------------------------------------------
 # Distribution
@@ -177,6 +184,16 @@ class TestExtractDistributionFeatures:
         _, flux = _make_curve()
         with pytest.raises(ValueError, match="n_bins"):
             extract_distribution_features(flux, n_bins=1)
+
+    def test_tail_mass_is_fraction_in_unit_interval(self):
+        _, flux = _make_curve(1000)
+        feats = extract_distribution_features(flux)
+        assert 0.0 <= feats["dist_tail_mass"] <= 1.0
+
+    def test_uniform_tail_mass_is_reasonable(self):
+        flux = np.linspace(-1, 1, 10000)
+        feats = extract_distribution_features(flux, n_bins=20)
+        assert feats["dist_tail_mass"] == pytest.approx(0.2, abs=0.02)
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +224,21 @@ class TestExtractFeatures:
         t = np.linspace(0, 10, 100)
         flux = np.linspace(0, 1, 50)
         with pytest.raises(ValueError, match="shape"):
+            extract_features(t, flux)
+
+    def test_handles_nan_in_time_and_flux(self):
+        rng = np.random.default_rng(42)
+        t = np.linspace(0, 24, 500)
+        flux = rng.normal(0, 0.01, 500)
+        flux[::10] = np.nan
+        t[::15] = np.nan
+        feats = extract_features(t, flux)
+        assert all(np.isfinite(v) for v in feats.values())
+
+    def test_all_nan_still_raises(self):
+        t = np.array([1.0, 2.0])
+        flux = np.array([np.nan, np.nan])
+        with pytest.raises(ValueError, match="No finite"):
             extract_features(t, flux)
 
 

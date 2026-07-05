@@ -53,6 +53,13 @@ class Settings:
     random_seed: int
     api_host: str
     api_port: int
+    download_timeout: int
+    download_max_retries: int
+    download_retry_delay: float
+    mast_timeout: int
+    api_title: str
+    api_version: str
+    model_name: str
     paths: ProjectPaths
 
 
@@ -87,6 +94,13 @@ def get_settings() -> Settings:
         random_seed=int(os.getenv("RANDOM_SEED", "42")),
         api_host=os.getenv("API_HOST", "127.0.0.1"),
         api_port=int(os.getenv("API_PORT", "8000")),
+        download_timeout=int(os.getenv("DOWNLOAD_TIMEOUT", "120")),
+        download_max_retries=int(os.getenv("DOWNLOAD_MAX_RETRIES", "3")),
+        download_retry_delay=float(os.getenv("DOWNLOAD_RETRY_DELAY", "5.0")),
+        mast_timeout=int(os.getenv("MAST_TIMEOUT", "120")),
+        api_title=os.getenv("API_TITLE", "Exoplanet Transit Hunter API"),
+        api_version=os.getenv("API_VERSION", "0.1.0"),
+        model_name=os.getenv("MODEL_NAME", "random_forest.joblib"),
         paths=_build_paths(),
     )
 
