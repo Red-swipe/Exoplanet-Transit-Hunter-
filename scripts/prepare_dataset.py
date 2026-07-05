@@ -21,7 +21,7 @@ logger = get_logger(__name__)
 
 def _resolve_koi_csv() -> Path:
     """Return the path to the KOI cumulative CSV shipped with the project."""
-    return settings.paths.root / "misca" / "datasets" / "KOI" / "cumulative_2026.07.01_09.24.36.csv"
+    return settings.paths.root / "misc" / "datasets" / "KOI" / "cumulative_2026.07.01_09.24.36.csv"
 
 
 def read_unique_kepids(csv_path: Path, confirmed_only: bool = False) -> list[str]:

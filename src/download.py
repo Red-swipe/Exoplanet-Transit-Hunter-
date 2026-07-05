@@ -1,57 +1,42 @@
-"""Data acquisition pipeline for Kepler and TESS light curves.
+"""Functions for searching and downloading Kepler/TESS light curves.
 
-This module provides a robust interface for searching and downloading
-public NASA light curve data using the Lightkurve library. Results are
-saved as FITS files in the project's raw data directory.
+This module provides a high-level interface to the Lightkurve library,
+handling target searches, result selection, and FITS file management.
 """
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from config import settings
 from src.logging_utils import get_logger
 
-
-if TYPE_CHECKING:
-    import lightkurve as lk
-
-
 logger = get_logger(__name__)
 
 
-def _import_lightkurve() -> Any:
-    """Import Lightkurve lazily.
-
-    Returns:
-        Imported Lightkurve module.
-
-    Raises:
-        ImportError: If Lightkurve is not installed.
-    """
-
+def _import_lightkurve():
+    """Lazy-load Lightkurve to avoid heavy imports when not needed."""
     try:
-        import lightkurve as lk  # noqa: F811
+        import lightkurve as lk
+        return lk
     except ImportError as exc:
-        logger.exception("Lightkurve is required to download light curves.")
+        logger.error("Lightkurve is not installed. Run 'pip install lightkurve'.")
         raise ImportError(
-            "Lightkurve is required for data download. Install dependencies "
-            "with `pip install -r requirements.txt`."
+            "The 'lightkurve' package is required for this module."
         ) from exc
 
-    return lk
 
-
-def _ensure_download_dir(download_dir: Path | None = None) -> Path:
-    """Ensure the download directory exists and return its resolved path.
+def _ensure_download_dir(download_dir: Path | str | None = None) -> Path:
+    """Ensure the download directory exists and return its path.
 
     Args:
-        download_dir: Optional download directory. Defaults to the project's
-            raw data directory from application settings.
+        download_dir: Path to the directory. If None, uses the raw data
+            path from application settings.
 
     Returns:
-        Resolved download directory path.
+        Path object pointing to the confirmed directory.
     """
 
     if download_dir is None:
@@ -65,12 +50,12 @@ def _fits_filename(target_id: str, mission: str, author: str = "") -> str:
     """Build a descriptive filename for a downloaded FITS light curve.
 
     Args:
-        target_id: Target identifier (e.g., ``"Kepler-10"``, ``"TIC 123456789"``).
-        mission: Mission name (``"Kepler"``, ``"K2"``, or ``"TESS"``).
-        author: Optional pipeline author (e.g., ``"SPOC"``, ``"QLP"``).
+        target_id: Target identifier (e.g., "Kepler-10", "TIC 123456789").
+        mission: Mission name ("Kepler", "K2", or "TESS").
+        author: Optional pipeline author (e.g., "SPOC", "QLP").
 
     Returns:
-        Filename with ``.fits`` extension.
+        Filename with .fits extension.
     """
 
     safe_id = target_id.replace(" ", "_")
@@ -89,7 +74,7 @@ def _is_downloaded(target_id: str, mission: str, download_dir: Path) -> bool:
         download_dir: Directory to scan.
 
     Returns:
-        ``True`` if at least one matching FITS file exists.
+        True if at least one matching FITS file exists.
     """
 
     search_pattern = f"{target_id.replace(' ', '_')}_{mission}*.fits"
@@ -100,32 +85,15 @@ def search_target(
     target_id: str,
     mission: str = "Kepler",
 ) -> list[dict[str, Any]]:
-    """Search for available light curves for a given target.
-
-    Args:
-        target_id: Target identifier. Accepts Kepler IDs (e.g.,
-            ``"Kepler-10"``, ``"KIC 11904151"``), TIC IDs (e.g.,
-            ``"TIC 150428135"``), or common target names.
-        mission: Mission to search. One of ``"Kepler"``, ``"K2"``,
-            ``"TESS"``.
-
-    Returns:
-        List of search result metadata dictionaries. Each entry contains
-        keys such as ``target_name``, ``mission``, ``author``,
-        ``exptime``, and ``distance``. Returns an empty list when no
-        results are found.
-
-    Raises:
-        ImportError: If Lightkurve is not installed.
-        RuntimeError: If the search fails due to a network or server error.
-    """
+    """Search for available light curves for a given target."""
 
     lk = _import_lightkurve()
-    logger.info("Searching for %s in %s mission data.", target_id, mission)
+    logger.info("[TRACE] Entering search_target for target_id=%s, mission=%s", target_id, mission)
 
-    logger.debug("Calling lk.search_lightcurve(target_id=%s, mission=%s) ...", target_id, mission)
     try:
+        logger.info("[TRACE] Calling lk.search_lightcurve(target_id=%s, mission=%s)", target_id, mission)
         search_result = lk.search_lightcurve(target_id, mission=mission)
+        logger.info("[TRACE] lk.search_lightcurve returned %d results", 0 if search_result is None else len(search_result))
     except Exception as exc:
         logger.exception(
             "Search failed for target %s in mission %s.", target_id, mission
@@ -133,7 +101,6 @@ def search_target(
         raise RuntimeError(
             f"Failed to search for target {target_id} in {mission} data."
         ) from exc
-    logger.debug("lk.search_lightcurve returned %d result(s).", 0 if search_result is None else len(search_result))
 
     if search_result is None or len(search_result) == 0:
         logger.warning("No light curves found for %s in %s.", target_id, mission)
@@ -171,30 +138,7 @@ def download_lightcurve(
     download_dir: Path | None = None,
     quality_bitmask: str = "default",
 ) -> Path:
-    """Download the highest-quality light curve for a target.
-
-    Searches the specified mission archive and downloads the best available
-    light curve. The result is saved as a FITS file in ``download_dir``.
-    Duplicate downloads are detected and skipped.
-
-    Args:
-        target_id: Target identifier (Kepler ID, TIC ID, or target name).
-        mission: Mission to search. One of ``"Kepler"``, ``"K2"``,
-            ``"TESS"``.
-        download_dir: Optional download directory. Defaults to the
-            project's ``data/raw/`` directory.
-        quality_bitmask: Bitmask for quality filtering. Passed directly to
-            Lightkurve's ``download()`` method.
-
-    Returns:
-        Path to the downloaded (or pre-existing) FITS file.
-
-    Raises:
-        ImportError: If Lightkurve is not installed.
-        ValueError: If no light curves are found for the target.
-        RuntimeError: If the download fails due to a network error,
-            corrupted data, or file write failure.
-    """
+    """Download the highest-quality light curve for a target."""
 
     lk = _import_lightkurve()
     output_dir = _ensure_download_dir(download_dir)
@@ -209,24 +153,18 @@ def download_lightcurve(
         )
         return existing[0]
 
-    logger.info("Downloading light curve for %s (%s).", target_id, mission)
+    logger.info("[TRACE] Entering download_lightcurve for target_id=%s, mission=%s", target_id, mission)
 
     from astroquery.mast import Mast
     Mast.TIMEOUT = 120
-    logger.info(
-        "Calling lk.search_lightcurve(target_id=%s, mission=%s) ...",
-        target_id,
-        mission,
-    )
+
     try:
+        logger.info("[TRACE] Calling lk.search_lightcurve(target_id=%s, mission=%s)", target_id, mission)
         search_result = lk.search_lightcurve(target_id, mission=mission)
+        logger.info("[TRACE] lk.search_lightcurve returned %d results", 0 if search_result is None else len(search_result))
     except Exception as exc:
         logger.exception("Search failed for target %s.", target_id)
         raise RuntimeError(f"Failed to search for target {target_id}.") from exc
-    logger.info(
-        "lk.search_lightcurve returned %d result(s).",
-        0 if search_result is None else len(search_result),
-    )
 
     if search_result is None or len(search_result) == 0:
         logger.error(
@@ -236,18 +174,15 @@ def download_lightcurve(
             f"No light curves found for target '{target_id}' in {mission} data."
         )
 
-    logger.info(
-        "Calling search_result[0].download(quality_bitmask=%s) ...",
-        quality_bitmask,
-    )
     try:
+        logger.info("[TRACE] Calling search_result[0].download(quality_bitmask=%s)", quality_bitmask)
         lightcurve = search_result[0].download(quality_bitmask=quality_bitmask)
+        logger.info("[TRACE] search_result[0].download() completed successfully")
     except Exception as exc:
         logger.exception("Download failed for target %s.", target_id)
         raise RuntimeError(
             f"Failed to download light curve for {target_id}."
         ) from exc
-    logger.info("search_result[0].download returned successfully.")
 
     if lightcurve is None:
         logger.error("Download returned None for target %s.", target_id)
@@ -262,7 +197,9 @@ def download_lightcurve(
     output_path = output_dir / filename
 
     try:
+        logger.info("[TRACE] Calling lightcurve.to_fits(output_path=%s)", output_path)
         lightcurve.to_fits(output_path, overwrite=True)
+        logger.info("[TRACE] lightcurve.to_fits() completed successfully")
     except Exception as exc:
         logger.exception("Failed to write FITS file: %s", output_path)
         raise RuntimeError(
@@ -270,7 +207,9 @@ def download_lightcurve(
         ) from exc
 
     try:
+        logger.info("[TRACE] Calling lk.read(output_path=%s) for verification", output_path)
         lk.read(output_path)
+        logger.info("[TRACE] lk.read() verification completed successfully")
     except Exception as exc:
         logger.exception("Downloaded file is corrupted: %s", output_path)
         output_path.unlink(missing_ok=True)
@@ -289,21 +228,7 @@ def download_batch(
     target_ids: list[str],
     mission: str = "Kepler",
 ) -> list[Path]:
-    """Download light curves for multiple targets.
-
-    Each target is downloaded independently so that a single failure does
-    not abort the entire batch.
-
-    Args:
-        target_ids: List of target identifiers.
-        mission: Mission to search for all targets.
-
-    Returns:
-        Paths to successfully downloaded FITS files.
-
-    Raises:
-        ImportError: If Lightkurve is not installed.
-    """
+    """Download light curves for multiple targets."""
 
     logger.info(
         "Starting batch download of %d targets for %s.", len(target_ids), mission
@@ -337,15 +262,7 @@ def download_batch(
 
 
 def list_downloaded(download_dir: Path | None = None) -> list[Path]:
-    """List all downloaded light curve FITS files.
-
-    Args:
-        download_dir: Optional directory to scan. Defaults to the
-            project's ``data/raw/`` directory.
-
-    Returns:
-        Sorted list of paths to FITS files in the download directory.
-    """
+    """List all downloaded light curve FITS files."""
 
     scan_dir = _ensure_download_dir(download_dir)
     fits_files = sorted(scan_dir.glob("*.fits"))
