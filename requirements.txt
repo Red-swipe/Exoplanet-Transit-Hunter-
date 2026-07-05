@@ -10,4 +10,4 @@ uvicorn
 pydantic
 python-multipart
 pytest
-python-dotenv
+pydantic-settings
