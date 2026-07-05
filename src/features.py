@@ -47,7 +47,7 @@ def _validate_arrays(time: FloatArray, flux: FloatArray) -> tuple[FloatArray, Fl
     if not np.any(valid):
         raise ValueError("No finite (time, flux) pairs available.")
 
-    return time_arr, flux_arr
+    return time_arr[valid], flux_arr[valid]
 
 
 def _robust_std(values: FloatArray) -> float:
@@ -296,11 +296,11 @@ def extract_timeseries_features(time: FloatArray, flux: FloatArray) -> dict[str,
     # Lomb-Scargle periodogram
     try:
         base_freq = 1.0 / max(time_arr[-1] - time_arr[0], 1e-12)
-        freqs = np.linspace(base_freq, 1.0, 5000)
-        pgram = signal.lombscargle(time_arr, flux_arr, freqs)
+        angular_freqs = np.linspace(base_freq, 1.0, 5000) * (2.0 * np.pi)
+        pgram = signal.lombscargle(time_arr, flux_arr, angular_freqs)
         peak_power = float(np.max(pgram))
-        peak_freq = float(freqs[np.argmax(pgram)])
-        peak_period = 1.0 / peak_freq if peak_freq > 0 else 0.0
+        peak_freq = float(angular_freqs[np.argmax(pgram)])
+        peak_period = (2.0 * np.pi) / peak_freq if peak_freq > 0 else 0.0
     except Exception:
         logger.warning("Lomb-Scargle periodogram computation failed.")
         peak_power = 0.0
@@ -346,8 +346,9 @@ def extract_distribution_features(
     if n_bins < 2:
         raise ValueError("n_bins must be at least 2.")
 
-    counts, edges = np.histogram(finite, bins=n_bins, density=True)
-    probs = counts / max(np.sum(counts), 1e-12)
+    counts, edges = np.histogram(finite, bins=n_bins, density=False)
+    total = float(np.sum(counts))
+    probs = counts / max(total, 1e-12)
 
     # Entropy of the binned distribution (uniform → high, peaked → low)
     entropy = float(-np.sum(probs[probs > 0] * np.log(probs[probs > 0])))
@@ -356,7 +357,7 @@ def extract_distribution_features(
 
     # Tail mass: fraction of histogram mass in outermost bins
     tail_k = max(1, n_bins // 10)
-    tail_mass = float(np.sum(counts[:tail_k]) + np.sum(counts[-tail_k:]))
+    tail_mass = float((np.sum(counts[:tail_k]) + np.sum(counts[-tail_k:])) / max(total, 1e-12))
 
     # Concentration: mass within the central quartile
     centers = (edges[:-1] + edges[1:]) / 2.0

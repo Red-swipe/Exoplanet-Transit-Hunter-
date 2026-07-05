@@ -3,13 +3,11 @@ pandas
 scipy
 astropy
 lightkurve
-matplotlib
 joblib
 scikit-learn
-torch
-torchvision
 fastapi
 uvicorn
 pydantic
+python-multipart
 pytest
 python-dotenv

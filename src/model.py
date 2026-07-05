@@ -178,6 +178,7 @@ def split_dataset(
         dataset.y,
         test_size=test_size,
         random_state=seed,
+        shuffle=True,
         stratify=dataset.y,
     )
     logger.info(
@@ -480,3 +481,72 @@ def cross_validate_model(
         result.roc_auc_std,
     )
     return result
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+
+def _main() -> None:
+    """Train a model and save it to the models directory."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Train an Exoplanet Transit Hunter classifier."
+    )
+    parser.add_argument(
+        "--model",
+        default="random_forest",
+        choices=["random_forest", "gradient_boosting"],
+    )
+    parser.add_argument(
+        "--features", type=str, default=None, help="Path to a .npy or .npz feature matrix."
+    )
+    parser.add_argument(
+        "--labels", type=str, default=None, help="Path to a .npy label vector."
+    )
+    parser.add_argument(
+        "--test-size", type=float, default=0.2, help="Fraction for test split."
+    )
+    parser.add_argument(
+        "--seed", type=int, default=42, help="Random seed for reproducibility."
+    )
+    args = parser.parse_args()
+
+    if args.features and args.labels:
+        X = np.load(args.features)
+        y = np.load(args.labels)
+        dataset = prepare_dataset(X, y)
+    else:
+        logger.warning("No feature/label files provided; training on synthetic data.")
+        rng = np.random.default_rng(args.seed)
+        X = rng.random((200, 10))
+        y = (X[:, 0] + X[:, 1] * 0.5 > 0.75).astype(np.float64)
+        dataset = prepare_dataset(X, y)
+
+    X_train, X_test, y_train, y_test = split_dataset(dataset, test_size=args.test_size, random_state=args.seed)
+
+    if args.model == "random_forest":
+        model = train_random_forest(X_train, y_train, random_state=args.seed)
+    else:
+        model = train_gradient_boosting(X_train, y_train, random_state=args.seed)
+
+    metrics = evaluate_model(model, X_test, y_test)
+    cv_result = cross_validate_model(
+        type(model), X_train, y_train, cv=5, random_state=args.seed
+    )
+
+    model_type = "random_forest" if args.model == "random_forest" else "gradient_boosting"
+    save_model(model, f"{model_type}.joblib")
+
+    logger.info(
+        "Training complete — test accuracy: %.4f, CV accuracy: %.4f ± %.4f",
+        metrics.accuracy,
+        cv_result.accuracy_mean,
+        cv_result.accuracy_std,
+    )
+
+
+if __name__ == "__main__":
+    _main()

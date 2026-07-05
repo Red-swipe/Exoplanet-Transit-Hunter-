@@ -123,6 +123,7 @@ def search_target(
     lk = _import_lightkurve()
     logger.info("Searching for %s in %s mission data.", target_id, mission)
 
+    logger.debug("Calling lk.search_lightcurve(target_id=%s, mission=%s) ...", target_id, mission)
     try:
         search_result = lk.search_lightcurve(target_id, mission=mission)
     except Exception as exc:
@@ -132,6 +133,7 @@ def search_target(
         raise RuntimeError(
             f"Failed to search for target {target_id} in {mission} data."
         ) from exc
+    logger.debug("lk.search_lightcurve returned %d result(s).", 0 if search_result is None else len(search_result))
 
     if search_result is None or len(search_result) == 0:
         logger.warning("No light curves found for %s in %s.", target_id, mission)
@@ -209,11 +211,22 @@ def download_lightcurve(
 
     logger.info("Downloading light curve for %s (%s).", target_id, mission)
 
+    from astroquery.mast import Mast
+    Mast.TIMEOUT = 120
+    logger.info(
+        "Calling lk.search_lightcurve(target_id=%s, mission=%s) ...",
+        target_id,
+        mission,
+    )
     try:
         search_result = lk.search_lightcurve(target_id, mission=mission)
     except Exception as exc:
         logger.exception("Search failed for target %s.", target_id)
         raise RuntimeError(f"Failed to search for target {target_id}.") from exc
+    logger.info(
+        "lk.search_lightcurve returned %d result(s).",
+        0 if search_result is None else len(search_result),
+    )
 
     if search_result is None or len(search_result) == 0:
         logger.error(
@@ -223,6 +236,10 @@ def download_lightcurve(
             f"No light curves found for target '{target_id}' in {mission} data."
         )
 
+    logger.info(
+        "Calling search_result[0].download(quality_bitmask=%s) ...",
+        quality_bitmask,
+    )
     try:
         lightcurve = search_result[0].download(quality_bitmask=quality_bitmask)
     except Exception as exc:
@@ -230,6 +247,7 @@ def download_lightcurve(
         raise RuntimeError(
             f"Failed to download light curve for {target_id}."
         ) from exc
+    logger.info("search_result[0].download returned successfully.")
 
     if lightcurve is None:
         logger.error("Download returned None for target %s.", target_id)

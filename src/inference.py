@@ -1,16 +1,21 @@
+from __future__ import annotations
+
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import numpy.typing as npt
-from lightkurve import LightCurve
 from sklearn.base import ClassifierMixin
+
+if TYPE_CHECKING:
+    from lightkurve import LightCurve
 
 from src.features import extract_features_from_batch
 from src.logging_utils import get_logger
 from src.model import load_model
+from config import settings
 from src.preprocessing import (
     detrend,
     load_lightcurve,
@@ -23,6 +28,19 @@ from src.preprocessing import (
 logger = get_logger(__name__)
 
 FloatArray = npt.NDArray[np.float64]
+
+
+def _import_lightkurve() -> Any:
+    """Lazy-import lightkurve; raises ``ImportError`` if not installed."""
+    try:
+        import lightkurve as lk  # noqa: F811
+
+        return lk
+    except ImportError:
+        raise ImportError(
+            "lightkurve is required for inference. "
+            "Install it with: pip install lightkurve"
+        )
 
 
 @dataclass
@@ -48,16 +66,17 @@ class BatchPredictionResult:
 
 
 def load_trained_model(name: str = "random_forest") -> ClassifierMixin:
-    logger.info("Loading model: %s", name)
+    model_path = settings.paths.root / "models" / name
+    logger.info("Loading model: %s", model_path)
     try:
-        model = load_model(name)
-        logger.info("Model loaded: %s (%s)", name, type(model).__name__)
+        model = load_model(str(model_path))
+        logger.info("Model loaded: %s (%s)", model_path, type(model).__name__)
         return model
     except FileNotFoundError:
-        logger.exception("Model not found: %s", name)
+        logger.exception("Model not found: %s", model_path)
         raise
     except Exception:
-        logger.exception("Failed to load model: %s", name)
+        logger.exception("Failed to load model: %s", model_path)
         raise
 
 
@@ -136,7 +155,8 @@ def predict_lightcurve(
     if model is None:
         model = load_trained_model(model_name)
 
-    lc = LightCurve(time=time, flux=flux, flux_err=flux_error)
+    lk = _import_lightkurve()
+    lc = lk.LightCurve(time=time, flux=flux, flux_err=flux_error)
 
     processed_lc = remove_nan(lc)
     processed_lc = normalize(processed_lc)

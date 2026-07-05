@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import time
 from contextlib import asynccontextmanager
-from pathlib import Path
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -40,7 +38,7 @@ async def lifespan(app: FastAPI):
     model_path = settings.paths.root / "models" / DEFAULT_MODEL_NAME
     if model_path.is_file():
         try:
-            app.state.model = load_trained_model(str(model_path))
+            app.state.model = load_trained_model(DEFAULT_MODEL_NAME)
             app.state.model_name = DEFAULT_MODEL_NAME
             logger.info("Model loaded from %s", model_path)
         except Exception:
