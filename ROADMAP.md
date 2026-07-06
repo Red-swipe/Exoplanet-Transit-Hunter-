@@ -1,286 +1,420 @@
-# Roadmap
-
-## Completed
-
-### v1.1.0 — Scientific Correctness Fixes (current)
-
-Three critical bugs in the feature engineering module were identified, fixed, and
-verified with regression tests:
-
-| Fix | Module | Description |
-|-----|--------|-------------|
-| **B1** — Lomb-Scargle periodogram | `src/features.py` | `angular_freqs` now correctly uses `linspace(...) * 2π`; `peak_period` computed as `2π / peak_freq`. Old code produced periods off by 2π (~1.0 day instead of ~5.0 days). |
-| **B2** — NaN propagation | `src/features.py` | `_validate_arrays` now returns `time_arr[valid], flux_arr[valid]` (filtered). Old code returned unfiltered arrays, allowing NaN to poison `np.diff`, `np.corrcoef`, etc. |
-| **B3** — Histogram probability normalization | `src/features.py` | `density=False` with explicit `total = np.sum(counts)` normalization. Old code used `density=True` (PDF, sum ≠ 1) and no total normalization, producing `tail_mass > 1`. |
-
-## Known Issues (not yet addressed)
-
-Remaining engineering gaps from the full audit:
-
-| Priority | Issue | Area |
-|----------|-------|------|
-| **High** | No trained model persisted — prediction endpoints return 503 | `models/` |
-| **High** | No training workflow script (`train.py`) | Pipeline |
-| **Medium** | `flux_error` NaN removal hardcoded, not configurable | `preprocessing.py` |
-| **Medium** | Unpinned dependencies (`numpy`, `scikit-learn`, etc.) | `requirements.txt` |
-| **Medium** | `torch` / `torchvision` dead weight (~800 MB, never imported) | `requirements.txt` |
-| **Low** | Unused `window_size` parameter in noise features | `features.py` |
-| **Low** | Magic numbers `1.4826` (MAD→std), `3.0` (sigma clip) — no named constants | `features.py` |
-| **Low** | 4+ test suites claimed in `checklist.md` but do not exist | Tests |
-
-## Future Work
-
-1. **Model training pipeline** — create `scripts/train.py` to fit
-   `RandomForestClassifier` and persist via `joblib`; validate with
-   cross-validation metrics.
-2. **Configurable NaN handling** — expose a `drop_na` parameter in
-   preprocessing; allow different strategies (drop, fill, interpolate).
-3. **Dependency hygiene** — pin all versions in `requirements.txt`; remove
-   unused `torch`/`torchvision`.
-4. **Test coverage** — write tests for `preprocessing.py` (flux NaN handling,
-   pipeline edge cases) and `inference.py` (model loading, prediction
-   fallbacks).
-5. **Refactor** — extract magic numeric constants into module-level named
-   constants; remove dead parameters.
-
----
-
-# Detailed Development Plan
+# 🚀 Exoplanet Transit Hunter Roadmap
 
 > **Vision**
 >
-> Build a scientifically credible, reproducible, and maintainable exoplanet detection pipeline capable of downloading, preprocessing, extracting features from, and classifying Kepler/TESS light curves with high reliability.
-
-## Guiding Principles
-
-* **Correctness before optimization**
-* **Scientific validity before performance**
-* **Reliability before scale**
-* **Keep It Simple (KISS)**
-* **Avoid Premature Optimization (YAGNI)**
-* **Every prediction should be reproducible**
+> Build a scientifically credible, reproducible, and maintainable exoplanet detection pipeline capable of downloading, preprocessing, extracting features from, training on, and classifying Kepler/TESS light curves with high reliability.
 
 ---
 
-## Phase 1 — Reliability Foundation
+# Current Milestone — v1.3
 
-**Status:** In Progress
+The engineering foundation and first model are complete.
 
-Goal: Build a stable and trustworthy pipeline before adding new features.
+The current objective is to fix the identified data leakage vectors, establish scientifically honest evaluation metrics, and make every prediction reproducible.
 
-### 1. Identifier Normalization
+Current priorities:
 
-Ensure every astronomical target is normalized before any query.
-
-Examples:
-- `10000162` → `KIC 10000162`
-- `123456789` → `TIC 123456789`
-
-Why?
-- Faster Lightkurve lookups
-- Removes ambiguity
-- Consistent dataset generation
-
-### 2. Replace Broad Exception Handling
-
-Remove `except Exception:` with specific exceptions.
-
-Benefits:
-- Easier debugging
-- Better error messages
-- Prevent hidden bugs
-
-### 3. Robust Download Pipeline
-
-Implement:
-- retry logic
-- exponential backoff
-- configurable timeout
-- graceful handling of HTTP 429, 500, 503
-
-Goal: Never fail permanently because NASA's servers are slow.
-
-### 4. FITS Validation
-
-Before caching:
-- verify file exists
-- verify FITS structure
-- detect corruption
-- redownload invalid files
-
-Goal: Never process corrupted astronomical data.
-
-### 5. Structured Timing Logs
-
-Measure every pipeline stage.
-
-Example:
-```
-Search........0.82 s
-Download....31.41 s
-Preprocess...0.08 s
-Features.....0.15 s
-Prediction...0.01 s
-
-TOTAL........32.47 s
-```
-
-Goal: Never guess where performance problems occur.
+* Fix same-star train/test and CV leakage (V3/V4).
+* Fix CANDIDATE label handling (L1).
+* Re-train and re-evaluate with honest metrics.
+* Implement provenance tracking for reproducibility.
 
 ---
 
-## Phase 2 — Scientific Reproducibility
+# Guiding Principles
 
-Goal: Every prediction should be reproducible months or years later.
-
-For every processed target, log:
-- Target ID, Observation ID
-- Pipeline version, Feature version, Model version
-- Detrending method, Window size, Sigma clipping threshold
-- Normalization method, Processing timestamp
-- Prediction score, Model confidence
-
-Example:
-```json
-{
-  "target": "KIC 10000162",
-  "pipeline_version": "1.2.0",
-  "feature_version": "v2",
-  "model": "rf_v3.pkl",
-  "detrending": "SavGol",
-  "window": 101,
-  "prediction": 0.97
-}
-```
-
-Goal: Every result should be explainable and reproducible.
+* Correctness before optimization.
+* Scientific validity before performance.
+* Reliability before scale.
+* Keep It Simple (KISS).
+* Avoid Premature Optimization (YAGNI).
+* Every prediction should be reproducible.
+* Every scientific change should be supported by evidence.
 
 ---
 
-## Phase 3 — Scientific Improvements
+# ✅ Completed (v1.2)
 
-Goal: Increase scientific accuracy instead of computational speed.
+## Leakage Audit
+
+### V3/V4 — Same-Star Train/Test and CV Leakage
+
+* Identified: `split_dataset` and `cross_validate_model` do not constrain same-star samples.
+* Multiple TCEs from the same star leak across test/CV boundaries.
+* Severity: High — all evaluation metrics are over-optimistic.
+* Fix planned: Add `groups` (star_id) parameter to `Dataset`, use `GroupShuffleSplit`.
+
+---
+
+### L1 — CANDIDATE Label Noise
+
+* Identified: CANDIDATE disposition mapped to negative (0.0) alongside FALSE POSITIVE.
+* Many CANDIDATEs are real planets — this introduces label noise.
+* Fixed: Added `--candidate-policy` flag (`exclude`|`negative`|`separate`). `exclude` removes CANDIDATE rows; `negative` maps them to class 0.0.
+
+---
+
+## Scientific Correctness
+
+### B1 — Lomb–Scargle Frequency Bug
+
+* Corrected angular frequency conversion (`2π`).
+* Corrected peak period computation.
+* Added regression tests.
+
+---
+
+### B2 — NaN Propagation Bug
+
+* Fixed array validation.
+* Invalid samples are removed before feature extraction.
+* Prevents NaN contamination throughout the pipeline.
+
+---
+
+### B3 — Histogram Probability Normalization
+
+* Replaced PDF normalization with probability mass normalization.
+* Fixed incorrect tail mass computation.
+* Added regression tests.
+
+---
+
+## Reliability
+
+Completed:
+
+* Identifier normalization (KIC/TIC support)
+* Download retry logic
+* Configurable download timeout
+* Improved exception handling
+* Structured timing instrumentation
+* FITS validation improvements
+
+---
+
+## Engineering
+
+Completed:
+
+* Migration to Pydantic BaseSettings
+* Centralized configuration
+* In-memory preprocessing support
+* Improved logging utilities
+* Modular preprocessing pipeline
+* Better download configuration
+
+---
+
+## Testing
+
+Completed:
+
+* 34 automated tests passing
+* Regression tests for scientific correctness bugs
+* Feature extraction validation
+* Statistical feature tests
+
+---
+
+## Documentation
+
+Completed:
+
+* CHANGELOG
+* ROADMAP
+* Graphify synchronization
+* Scientific audit reports
+
+---
+
+## Repository
+
+Completed:
+
+* Canonical repository migrated to
+
+```
+E:\A.G\dev_projects\01-exoplanet-transit-hunter
+```
+
+* Repository cleanup
+* Branch consolidation
+* Git history synchronization
+
+---
+
+# 🔴 Current High Priority
+
+## 1. Fix Data Leakage
+
+Status: Diagnosis complete — fixes pending
+
+### V3/V4 — Same-Star Leakage
+
+Add group-aware splitting to prevent same-star leakage:
+
+* Add `star_id` (groups) field to `Dataset`.
+* Replace `train_test_split` with `GroupShuffleSplit` in `split_dataset`.
+* Pass `groups` parameter to `StratifiedKFold.split()` in `cross_validate_model`.
+
+### L1 — CANDIDATE Label Noise
+
+* Added `--candidate-policy` flag (`exclude`/`negative`/`separate`) to training script.
+* Train only on CONFIRMED vs FALSE POSITIVE.
+
+### Deliverables
+
+* `models/random_forest_v2.joblib` — leakage-free retrained model
+* `docs/benchmark_report.md` — honest evaluation metrics
+
+---
+
+## 2. Scientific Reproducibility
+
+Status: Pending
+
+Every processed target should record:
+
+* Target ID
+* Observation ID
+* Pipeline version
+* Feature version
+* Model version
+* Detrending method
+* Window size
+* Sigma clipping threshold
+* Normalization method
+* Processing timestamp
+* Prediction score
+* Confidence
+
+Goal:
+
+Every prediction should be reproducible months or years later.
+
+---
+
+## 3. Scientific Improvements
+
+Status: Pending
 
 ### Adaptive Detrending
 
-Current: Fixed Savitzky-Golay window (101)
+Replace the fixed Savitzky–Golay window with an adaptive strategy based on:
 
-Future: Window depends on cadence, observation duration, expected transit duration, stellar variability.
+* cadence
+* observation duration
+* expected transit duration
+* stellar variability
 
-Goal: Avoid removing real transits.
+Goal:
+
+Preserve real transit signals.
+
+---
 
 ### Feature Engineering Review
 
-Audit every feature for redundancy, instability, weakness, and scientific soundness. Replace with stronger astrophysical features.
+Audit every extracted feature.
 
-### Leakage Prevention
+Identify:
 
-Audit train/test split, preprocessing, feature extraction, target grouping. Ensure observations from the same target never leak across datasets.
+* redundant features
+* weak predictors
+* unstable features
+* scientifically questionable features
+
+Replace only where evidence supports improvement.
+
+---
 
 ### Scientific Validation
 
-Evaluate against confirmed exoplanets, false positives, and eclipsing binaries.
+Benchmark against:
 
-Measure: Precision, Recall, F1, ROC-AUC.
+* Confirmed Kepler planets
+* KOIs
+* False positives
+* Eclipsing binaries
 
----
+Evaluate:
 
-## Phase 4 — Engineering Improvements
-
-Goal: Improve developer experience without increasing unnecessary complexity.
-
-### Configuration
-
-Migrate configuration to Pydantic BaseSettings. Benefits: type safety, validation, clearer configuration.
-
-### In-Memory Inference
-
-Avoid upload→temp file→read again. Use upload→memory→prediction to reduce unnecessary disk I/O.
-
-### Better Logging
-
-Include timestamps, processing durations, target IDs, warning levels, error context.
+* Precision
+* Recall
+* F1
+* ROC-AUC
+* Confusion Matrix
 
 ---
 
-## Phase 5 — Developer Productivity
+# 🟡 Medium Priority
 
-(Only after Phases 1–4 are complete.)
+## Configuration Improvements
 
-### Parallel Downloads
-
-```python
-ThreadPoolExecutor(max_workers=4)
-```
-
-Reasons: Faster dataset generation, minimal complexity, easy debugging, no asyncio event loop.
-
-Do NOT implement asyncio, aiohttp, Ray, or Dask at this stage.
+* Configurable NaN handling
+* Additional preprocessing options
+* Better validation
 
 ---
 
-## Phase 6 — Machine Learning Improvements
+## Dependency Hygiene
 
-Review feature importance, feature selection, hyperparameter tuning, cross-validation, class imbalance, calibration.
-
-Potential future models: XGBoost, LightGBM, CatBoost — only if they demonstrate measurable improvements.
-
----
-
-## Phase 7 — API Improvements
-
-Implement authentication, rate limiting, request validation, better error responses, OpenAPI improvements.
-
-Goal: Prepare for public deployment.
+* Pin package versions
+* Remove unused dependencies
+* Improve reproducibility
 
 ---
 
-## Phase 8 — Large Dataset Optimization
+## Test Coverage
 
-(Only after the entire scientific pipeline has been validated.)
+Expand automated tests for:
 
-Possible additions: async HTTP, advanced caching, download queues, checkpointing, resumable dataset generation.
-
-Only implement after profiling identifies genuine bottlenecks.
+* preprocessing
+* download
+* inference
+* model training
+* API
 
 ---
 
-## Phase 9 — Research Features
+## Code Quality
+
+* Remove unused parameters
+* Replace magic numbers with named constants
+* Continue reducing technical debt
+
+---
+
+# 🟢 Low Priority
+
+## API
+
+* Authentication
+* Rate limiting
+* Better OpenAPI documentation
+* Improved error responses
+
+---
+
+## Performance
+
+After scientific validation:
+
+* ThreadPoolExecutor downloads
+* Smarter caching
+* Faster dataset generation
+
+Do **not** introduce:
+
+* asyncio
+* aiohttp
+* Ray
+* Dask
+* distributed computing
+
+unless profiling demonstrates a real need.
+
+---
+
+# 🔬 Future Research
 
 Potential future additions:
-- Transit Least Squares (TLS)
-- BLS (Box Least Squares)
-- Lomb-Scargle improvements
-- Multi-quarter stitching
-- TESS support
-- Gaia integration
-- Stellar parameter enrichment
-- Explainable AI (SHAP)
-- Automated report generation
+
+* Transit Least Squares (TLS)
+* Box Least Squares (BLS)
+* Multi-quarter stitching
+* TESS support
+* Gaia integration
+* Stellar parameter enrichment
+* Explainable AI (SHAP)
+* Transit morphology classification
+* Automated scientific reports
 
 ---
 
-## Deliberately Avoid (For Now)
+# 🚫 Explicitly Out of Scope (For Now)
 
-The following are intentionally postponed to avoid unnecessary complexity:
+The following are intentionally postponed:
 
-- Ray, Dask, Kubernetes, Microservices
-- Distributed computing, GPU clusters
-- Async architecture, Message queues, Event-driven systems
+* Ray
+* Dask
+* Kubernetes
+* Microservices
+* GPU clusters
+* Event-driven architectures
+* Distributed systems
 
-These should only be introduced when profiling proves they are necessary.
+These will only be considered after scientific correctness and profiling justify the added complexity.
 
 ---
 
-## Long-Term Vision
+# Version Roadmap
 
-The long-term goal is to create an open-source exoplanet analysis toolkit that is:
-- Scientifically credible
-- Fully reproducible
-- Modular
-- Well documented
-- Easy to extend
-- Suitable for education and research
-- Capable of processing both Kepler and TESS light curves
+## v1.2 — Scientific Foundation
 
-Success is measured not by how many stars the pipeline processes, but by how reliably and correctly it identifies planetary transits.
+✅ Reliability complete
+
+✅ Engineering foundation complete
+
+✅ Scientific correctness bugs fixed
+
+✅ Regression tests
+
+✅ Model training (baseline Random Forest trained)
+
+✅ Data leakage audit (report written)
+
+⬜ Scientific reproducibility
+
+⬜ Adaptive detrending
+
+⬜ Benchmarking
+
+---
+
+## v1.3 — First Validated ML Pipeline (Current)
+
+✅ Model training pipeline complete
+
+✅ Data leakage audit complete
+
+⬜ Fix same-star train/test and CV leakage
+
+✅ Fix CANDIDATE label handling
+
+⬜ Leakage-free retrained model
+
+⬜ Honest evaluation metrics report
+
+⬜ Provenance tracking
+
+⬜ Validation against Kepler catalog
+
+---
+
+## v2.0 — Research-Grade Toolkit
+
+Goals:
+
+* TLS/BLS integration
+* TESS support
+* Gaia integration
+* Explainable AI
+* Advanced transit detection
+* Research-quality benchmarking
+
+---
+
+# Definition of Success
+
+The project is considered successful when it:
+
+* Produces scientifically credible predictions.
+* Is fully reproducible.
+* Is well documented.
+* Is modular and easy to extend.
+* Supports both education and research.
+* Can reliably classify exoplanet transit candidates using real astronomical data.
+
+Success is measured not by the number of stars processed, but by the correctness, reproducibility, and scientific credibility of the results.

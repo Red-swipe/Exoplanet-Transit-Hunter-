@@ -5,6 +5,44 @@ All notable changes to the Exoplanet Transit Hunter project are documented in th
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] — 2026-07-06
+
+### Added
+
+- **L1 — CANDIDATE label handling**: `--candidate-policy` CLI argument replaces
+  `--exclude-candidates`. Supports three modes:
+  - `exclude` (default): removes CANDIDATE rows, trains on CONFIRMED vs FALSE POSITIVE
+  - `negative`: maps CANDIDATE to class 0.0 alongside FALSE POSITIVE
+  - `separate`: raises `NotImplementedError` (reserved for future three-class)
+- **`TestCandidatePolicy`** regression tests in `tests/test_model.py`: 5 test
+  methods covering all three policy modes, default behavior, and no-candidate edge case
+
+### Changed
+
+- `scripts/train.py`: `_load_from_excel` accepts `candidate_policy` string param
+  instead of boolean `exclude_candidates`; filtering uses `koi_disposition` value
+  directly instead of KOI ID list matching; removed `_filter_out_candidates`
+- `docs/scientific_validation.md`: L1 marked ✅ Fixed, P1 updated to reflect
+  actual implementation
+- `ROADMAP.md`: CANDIDATE label handling marked ✅ completed
+
+## [1.2.0] — 2026-07-06
+
+### Fixed
+
+- **V4 — Cross-validation same-star leakage**: `cross_validate_model` now uses
+  `StratifiedGroupKFold` when `groups` is provided, replacing `StratifiedKFold`.
+  The old `StratifiedKFold.split(X, y, groups=groups)` accepted the groups
+  parameter silently but did **not** enforce group integrity, allowing TCEs from
+  the same star to appear in different folds and inflating CV metrics.
+  (Fixes docs/scientific_validation.md §4-V4)
+
+### Changed
+
+- `docs/scientific_validation.md`: V3 and V4 both marked ✅ Fixed
+- `tests/test_model.py`: added `test_grouped_cv_keeps_stars_together` to
+  `TestCrossValidateModel`
+
 ## [1.1.0] — 2026-07-05
 
 ### Added

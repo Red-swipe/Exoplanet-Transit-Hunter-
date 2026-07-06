@@ -29,7 +29,12 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
-from sklearn.model_selection import StratifiedKFold, train_test_split
+from sklearn.model_selection import (
+    GroupShuffleSplit,
+    StratifiedGroupKFold,
+    StratifiedKFold,
+    train_test_split,
+)
 
 from config import settings
 from src.logging_utils import get_logger, timer
@@ -104,20 +109,24 @@ def load_model(path: str | Path) -> ClassifierMixin:
 
 @dataclass
 class Dataset:
-    """Container for features and ground-truth labels.
+    """Container for features, ground-truth labels and optional star IDs.
 
     Attributes:
         X: Feature matrix of shape ``(n_samples, n_features)``.
         y: Label vector of shape ``(n_samples,)``.
+        star_ids: Optional star (Kepler) ID vector of shape ``(n_samples,)``
+            used for grouped splitting to prevent same-star leakage.
     """
 
     X: FloatArray
     y: FloatArray
+    star_ids: FloatArray | None = None
 
 
 def prepare_dataset(
     features: list[dict[str, float]] | FloatArray,
     labels: list[float | int] | FloatArray,
+    star_ids: FloatArray | None = None,
 ) -> Dataset:
     """Convert extracted feature dictionaries and labels into a dataset.
 
@@ -126,6 +135,7 @@ def prepare_dataset(
             :func:`~src.features.extract_features` or a pre-computed feature
             matrix.
         labels: Ground-truth binary labels (0 = non-transit, 1 = transit).
+        star_ids: Optional star (Kepler) ID vector for grouped splitting.
 
     Returns:
         Dataset with consistent feature ordering.
@@ -148,8 +158,16 @@ def prepare_dataset(
             f"Feature count {X.shape[0]} does not match label count {y.shape[0]}."
         )
 
+    if star_ids is not None:
+        star_ids_arr = np.asarray(star_ids, dtype=np.float64).ravel()
+        if star_ids_arr.shape[0] != X.shape[0]:
+            raise ValueError(
+                f"star_ids length {star_ids_arr.shape[0]} does not match "
+                f"sample count {X.shape[0]}."
+            )
+
     logger.info("Prepared dataset with %d samples and %d features.", X.shape[0], X.shape[1])
-    return Dataset(X=X, y=y)
+    return Dataset(X=X, y=y, star_ids=star_ids_arr if star_ids is not None else None)
 
 
 # ---------------------------------------------------------------------------
@@ -161,31 +179,56 @@ def split_dataset(
     dataset: Dataset,
     test_size: float = 0.2,
     random_state: int | None = None,
+    groups: FloatArray | None = None,
 ) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray]:
     """Split a dataset into stratified train and test sets.
+
+    When ``groups`` is provided, uses :class:`~sklearn.model_selection.
+    GroupShuffleSplit` to keep all samples from the same group (e.g. the
+    same star) in the same split, preventing same-star leakage.
 
     Args:
         dataset: Input dataset.
         test_size: Fraction of samples reserved for testing.
         random_state: Seed used by the splitter.
+        groups: Optional group labels for grouped splitting. When given,
+            ``dataset.star_ids`` is ignored in favour of this explicit
+            argument.
 
     Returns:
         Tuple ``(X_train, X_test, y_train, y_test)``.
     """
     seed = random_state if random_state is not None else settings.random_seed
-    X_train, X_test, y_train, y_test = train_test_split(
-        dataset.X,
-        dataset.y,
-        test_size=test_size,
-        random_state=seed,
-        shuffle=True,
-        stratify=dataset.y,
-    )
-    logger.info(
-        "Split dataset: %d train / %d test samples.",
-        X_train.shape[0],
-        X_test.shape[0],
-    )
+    group_labels = groups if groups is not None else dataset.star_ids
+
+    if group_labels is not None:
+        gss = GroupShuffleSplit(
+            n_splits=1, test_size=test_size, random_state=seed,
+        )
+        train_idx, test_idx = next(gss.split(dataset.X, dataset.y, groups=group_labels))
+        X_train, X_test = dataset.X[train_idx], dataset.X[test_idx]
+        y_train, y_test = dataset.y[train_idx], dataset.y[test_idx]
+        n_groups_total = len(np.unique(group_labels))
+        n_train_groups = len(np.unique(group_labels[train_idx]))
+        logger.info(
+            "Grouped split: %d train / %d test samples (%d / %d groups).",
+            X_train.shape[0], X_test.shape[0],
+            n_train_groups, n_groups_total,
+        )
+    else:
+        X_train, X_test, y_train, y_test = train_test_split(
+            dataset.X,
+            dataset.y,
+            test_size=test_size,
+            random_state=seed,
+            shuffle=True,
+            stratify=dataset.y,
+        )
+        logger.info(
+            "Split dataset: %d train / %d test samples.",
+            X_train.shape[0],
+            X_test.shape[0],
+        )
     return X_train, X_test, y_train, y_test
 
 
@@ -417,9 +460,15 @@ def cross_validate_model(
     y: FloatArray,
     cv: int = 5,
     random_state: int | None = None,
+    groups: FloatArray | None = None,
     **kwargs: Any,
 ) -> CrossValidationResult:
     """Run stratified k-fold cross-validation on a classifier.
+
+    When ``groups`` is provided, uses :class:`~sklearn.model_selection.
+    StratifiedGroupKFold` to keep all samples from the same group (e.g.
+    the same star) in the same fold, preventing same-star leakage while
+    maintaining class proportion balance.
 
     Args:
         model_class: Uninstantiated classifier class (e.g.
@@ -428,6 +477,7 @@ def cross_validate_model(
         y: Full label vector.
         cv: Number of folds.
         random_state: Seed passed to the model and the fold splitter.
+        groups: Optional group labels for grouped cross-validation.
         **kwargs: Additional keyword arguments forwarded to the model
             constructor.
 
@@ -435,12 +485,17 @@ def cross_validate_model(
         Aggregated cross-validation results with per-fold details.
     """
     seed = random_state if random_state is not None else settings.random_seed
-    skf = StratifiedKFold(n_splits=cv, shuffle=True, random_state=seed)
 
     fold_metrics: list[Metrics] = []
 
     with timer(logger, "cross_validate_model"):
-        for fold_idx, (train_idx, test_idx) in enumerate(skf.split(X, y)):
+        if groups is not None:
+            splitter = StratifiedGroupKFold(n_splits=cv, shuffle=True, random_state=seed)
+            split_iter = splitter.split(X, y, groups=groups)
+        else:
+            splitter = StratifiedKFold(n_splits=cv, shuffle=True, random_state=seed)
+            split_iter = splitter.split(X, y)
+        for fold_idx, (train_idx, test_idx) in enumerate(split_iter):
             X_fold_train = X[train_idx]
             X_fold_test = X[test_idx]
             y_fold_train = y[train_idx]

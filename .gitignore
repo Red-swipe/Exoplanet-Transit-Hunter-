@@ -34,3 +34,6 @@ build/
 
 # Logs
 *.log
+
+# Graphify
+graphify-out/cache/

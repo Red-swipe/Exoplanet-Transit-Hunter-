@@ -54,6 +54,7 @@ class PredictionResult:
     n_samples: int
     n_features: int
     metadata: dict[str, Any] | None = None
+    star_id: str | None = None
 
 
 @dataclass
